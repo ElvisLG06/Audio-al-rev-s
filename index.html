@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Voz al Revés</title>
+<meta name="theme-color" content="#14121f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Al Revés">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#14121f;--card:#1e1b2e;--line:#2e2a45;--txt:#f3f1ff;--mut:#9a94b8;--a:#ff5c7a;--b:#5cc8ff;--ok:#5ce0a0}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--txt);font-family:Inter,system-ui,sans-serif}
+body{padding:calc(env(safe-area-inset-top) + 18px) 16px calc(env(safe-area-inset-bottom) + 24px);max-width:520px;margin:0 auto}
+h1{font-family:Fredoka,sans-serif;font-size:30px;margin:4px 0 2px;letter-spacing:.3px}
+h1 span{color:var(--a);display:inline-block;transform:scaleX(-1)}
+.sub{color:var(--mut);font-size:14px;margin:0 0 18px}
+.step{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:16px;margin-bottom:12px;transition:opacity .25s,border-color .25s}
+.step.locked{opacity:.4;pointer-events:none}
+.step.active{border-color:var(--a)}
+.step.done .num{background:var(--ok);color:#0d2a1d}
+.hd{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.num{width:30px;height:30px;border-radius:50%;background:var(--line);display:grid;place-items:center;font-family:Fredoka;font-weight:700;flex:none}
+.hd b{font-family:Fredoka;font-weight:600;font-size:18px}
+.hd small{display:block;color:var(--mut);font-size:13px;margin-top:2px}
+canvas{width:100%;height:56px;display:block;border-radius:10px;background:#16142a;margin-bottom:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+button{font:600 16px Fredoka,sans-serif;border:0;border-radius:14px;padding:13px 16px;cursor:pointer;color:#14121f;background:var(--a);flex:1;min-width:120px;display:flex;align-items:center;justify-content:center;gap:8px}
+button.b{background:var(--b)}
+button.ghost{background:transparent;color:var(--txt);border:1px solid var(--line)}
+button.rec{animation:pulse 1.2s infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,92,122,.6)}50%{box-shadow:0 0 0 10px rgba(255,92,122,0)}}
+.time{font:500 13px Inter;color:var(--mut);margin-top:8px;min-height:16px}
+.note{font-size:13px;color:var(--mut);background:#221f36;border-radius:12px;padding:10px 12px;margin-bottom:12px;display:none}
+.note.show{display:block}
+.restart{margin-top:6px}
+input[type=file]{display:none}
+</style>
+</head>
+<body>
+<h1>Voz al <span>Revés</span></h1>
+<p class="sub">Graba, escucha al revés, imítalo… y descubre cómo suena tu imitación al derecho.</p>
+
+<div class="note" id="note"></div>
+
+<section class="step active" id="s1">
+  <div class="hd"><div class="num">1</div><div><b>Graba tu voz</b><small>Di una frase o canta algo</small></div></div>
+  <canvas id="c1"></canvas>
+  <div class="row"><button id="rec1">🎙️ Grabar</button><button class="ghost" id="play1">▶ Escuchar</button></div>
+  <div class="time" id="t1"></div>
+</section>
+
+<section class="step locked" id="s2">
+  <div class="hd"><div class="num">2</div><div><b>Escúchalo invertido</b><small>Memoriza cómo suena al revés</small></div></div>
+  <canvas id="c2"></canvas>
+  <div class="row"><button class="b" id="play2">◀ Reproducir invertido</button></div>
+  <div class="time" id="t2"></div>
+</section>
+
+<section class="step locked" id="s3">
+  <div class="hd"><div class="num">3</div><div><b>Imítalo y graba otra vez</b><small>Repite lo que escuchaste al revés</small></div></div>
+  <canvas id="c3"></canvas>
+  <div class="row"><button id="rec3">🎙️ Grabar imitación</button><button class="ghost" id="play3">▶ Escuchar</button></div>
+  <div class="time" id="t3"></div>
+</section>
+
+<section class="step locked" id="s4">
+  <div class="hd"><div class="num">4</div><div><b>Tu imitación, invertida</b><small>¿Se parece a tu frase original?</small></div></div>
+  <canvas id="c4"></canvas>
+  <div class="row"><button class="b" id="play4">◀ Reproducir invertido</button><button class="ghost" id="cmp">↔ Comparar con el original</button></div>
+  <div class="row" style="margin-top:10px"><button class="ghost" id="dl" style="display:none">⬇ Guardar resultado</button></div>
+  <div class="time" id="t4"></div>
+</section>
+
+<button class="ghost restart" id="reset">↺ Empezar de nuevo</button>
+<input type="file" id="file" accept=".m4a,.mp3,.wav,.aac,.ogg,.opus,.webm,.amr,.3gp,audio/*">
+
+<script>
+const $=id=>document.getElementById(id);
+let ctx, src=null, playingBtn=null;
+const buf={1:null,2:null,3:null,4:null};
+let mediaRec=null, chunks=[], recTarget=0, recStart=0, timer=null, micBlocked=false;
+
+function ac(){ if(!ctx) ctx=new (window.AudioContext||window.webkitAudioContext)(); if(ctx.state==='suspended') ctx.resume(); return ctx; }
+function note(msg){ const n=$('note'); n.innerHTML=msg; n.classList.toggle('show',!!msg); }
+
+function reverse(b){
+  const r=ac().createBuffer(b.numberOfChannels,b.length,b.sampleRate);
+  for(let c=0;c<b.numberOfChannels;c++){ const s=b.getChannelData(c), d=r.getChannelData(c); for(let i=0,n=s.length;i<n;i++) d[i]=s[n-1-i]; }
+  return r;
+}
+function draw(id,b,color){
+  const cv=$(id), dpr=devicePixelRatio||1, w=cv.clientWidth, h=cv.clientHeight;
+  cv.width=w*dpr; cv.height=h*dpr; const g=cv.getContext('2d'); g.scale(dpr,dpr); g.clearRect(0,0,w,h);
+  if(!b) return; const d=b.getChannelData(0), step=Math.max(1,Math.floor(d.length/w)); g.fillStyle=color;
+  for(let x=0;x<w;x++){ let m=0; for(let i=0;i<step;i++){ const v=Math.abs(d[x*step+i]||0); if(v>m)m=v; } const bh=Math.max(1.5,m*h*.9); g.fillRect(x,(h-bh)/2,1,bh); }
+}
+function fmt(s){ return s.toFixed(1)+' s'; }
+function stopPlay(){ if(src){ try{src.onended=null;src.stop()}catch(e){} src=null; } if(playingBtn){ playingBtn.textContent=playingBtn.dataset.label; playingBtn=null; } }
+function play(b,btn,after){
+  const same=playingBtn===btn; stopPlay(); if(same||!b) return;
+  const a=ac(); src=a.createBufferSource(); src.buffer=b; src.connect(a.destination);
+  btn.dataset.label=btn.dataset.label||btn.textContent; btn.textContent='■ Detener'; playingBtn=btn;
+  src.onended=()=>{ stopPlay(); after&&after(); }; src.start();
+}
+function setStep(n){
+  for(let i=1;i<=4;i++){ const s=$('s'+i); s.classList.toggle('locked',i>n); s.classList.toggle('active',i===n); s.classList.toggle('done',i<n); }
+}
+
+async function gotAudio(blob,which){
+  try{
+    const ab=await blob.arrayBuffer(); const b=await new Promise((res,rej)=>ac().decodeAudioData(ab,res,rej));
+    if(which===1){ buf[1]=b; buf[2]=reverse(b); buf[3]=buf[4]=null; draw('c1',b,'#ff5c7a'); draw('c2',buf[2],'#5cc8ff'); draw('c3',null); draw('c4',null);
+      $('t1').textContent='Duración: '+fmt(b.duration); $('t3').textContent=$('t4').textContent=''; setStep(2); $('s2').scrollIntoView({behavior:'smooth',block:'center'}); }
+    else { buf[3]=b; buf[4]=reverse(b); draw('c3',b,'#ff5c7a'); draw('c4',buf[4],'#5cc8ff');
+      $('t3').textContent='Duración: '+fmt(b.duration); setStep(4); $('s4').classList.add('done'); $('s4').classList.add('active'); $('s4').scrollIntoView({behavior:'smooth',block:'center'}); }
+  }catch(e){ note('No pude leer ese audio. Intenta grabarlo de nuevo.'); }
+}
+
+async function toggleRec(which){
+  const btn=$('rec'+which);
+  if(mediaRec&&mediaRec.state==='recording'){ mediaRec.stop(); return; }
+  stopPlay(); ac();
+  if(micBlocked){ recTarget=which; $('file').click(); return; }
+  let stream;
+  try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}}); }
+  catch(e){
+    micBlocked=true; recTarget=which;
+    note('Este visor no permite usar el micrófono directamente. Graba primero con la app de grabadora / Notas de Voz de tu celular y luego toca <b>Grabar</b> para elegir ese audio.');
+    $('file').click(); return;
+  }
+  chunks=[]; recTarget=which;
+  const mt=['audio/webm;codecs=opus','audio/mp4','audio/webm',''].find(t=>!t||(window.MediaRecorder&&MediaRecorder.isTypeSupported(t)));
+  mediaRec=new MediaRecorder(stream,mt?{mimeType:mt}:undefined);
+  mediaRec.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
+  mediaRec.onstop=()=>{ stream.getTracks().forEach(t=>t.stop()); clearInterval(timer); btn.classList.remove('rec'); btn.textContent=btn.dataset.label;
+    gotAudio(new Blob(chunks,{type:mediaRec.mimeType||'audio/webm'}),which); };
+  mediaRec.start(); recStart=Date.now();
+  btn.dataset.label=btn.dataset.label||btn.textContent; btn.textContent='■ Detener'; btn.classList.add('rec');
+  const t=$('t'+which); timer=setInterval(()=>t.textContent='Grabando… '+fmt((Date.now()-recStart)/1000),100);
+}
+
+$('file').onchange=e=>{ const f=e.target.files[0]; e.target.value=''; if(f) gotAudio(f,recTarget); };
+$('rec1').onclick=()=>toggleRec(1);
+$('rec3').onclick=()=>toggleRec(3);
+$('play1').onclick=e=>play(buf[1],e.currentTarget);
+$('play2').onclick=e=>{ play(buf[2],e.currentTarget); if(!buf[3]) setStep(3); };
+$('play3').onclick=e=>play(buf[3],e.currentTarget);
+$('play4').onclick=e=>play(buf[4],e.currentTarget);
+$('cmp').onclick=e=>{ const btn=e.currentTarget; if(playingBtn===btn){stopPlay();return;}
+  play(buf[1],btn,()=>{ setTimeout(()=>{ play(buf[4],btn); btn.textContent='■ Detener (tu versión)'; },400); }); btn.textContent='■ Detener (original)'; };
+$('reset').onclick=()=>{ stopPlay(); if(mediaRec&&mediaRec.state==='recording') mediaRec.stop(); for(const k in buf) buf[k]=null; ['c1','c2','c3','c4'].forEach(c=>draw(c,null)); ['t1','t2','t3','t4'].forEach(t=>$(t).textContent=''); setStep(1); scrollTo({top:0,behavior:'smooth'}); };
+
+// WAV export
+function wav(b){
+  const ch=b.numberOfChannels,len=b.length,out=new DataView(new ArrayBuffer(44+len*ch*2));
+  const ws=(o,s)=>{for(let i=0;i<s.length;i++)out.setUint8(o+i,s.charCodeAt(i))};
+  ws(0,'RIFF');out.setUint32(4,36+len*ch*2,true);ws(8,'WAVE');ws(12,'fmt ');out.setUint32(16,16,true);out.setUint16(20,1,true);out.setUint16(22,ch,true);
+  out.setUint32(24,b.sampleRate,true);out.setUint32(28,b.sampleRate*ch*2,true);out.setUint16(32,ch*2,true);out.setUint16(34,16,true);ws(36,'data');out.setUint32(40,len*ch*2,true);
+  let o=44; const data=[...Array(ch)].map((_,c)=>b.getChannelData(c));
+  for(let i=0;i<len;i++) for(let c=0;c<ch;c++){ const v=Math.max(-1,Math.min(1,data[c][i])); out.setInt16(o,v<0?v*0x8000:v*0x7fff,true); o+=2; }
+  return new Uint8Array(out.buffer);
+}
+let downloads=null;
+(async()=>{ try{ if(window.claude&&claude.use){ downloads=await claude.use('downloads'); } }catch(e){}
+  $('dl').style.display=''; })();
+$('dl').onclick=async()=>{
+  if(!buf[4]) return; const data=wav(buf[4]), name='mi-voz-al-reves.wav';
+  try{ if(downloads){ await downloads.save({filename:name,data}); return; } }catch(e){ return; }
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([data],{type:'audio/wav'})); a.download=name; a.click();
+};
+addEventListener('resize',()=>{ draw('c1',buf[1],'#ff5c7a');draw('c2',buf[2],'#5cc8ff');draw('c3',buf[3],'#ff5c7a');draw('c4',buf[4],'#5cc8ff'); });
+setStep(1);
+if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
+</script>
+</body>
+</html>
