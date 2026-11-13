@@ -83,68 +83,98 @@ input[type=file]{display:none}
 
 <script>
 const $=id=>document.getElementById(id);
-let ctx, src=null, playingBtn=null;
+const el=new Audio(); el.preload='auto'; el.setAttribute('playsinline','');
+let player=null, playingBtn=null, recording=false;
 const buf={1:null,2:null,3:null,4:null};
-let mediaRec=null, chunks=[], recTarget=0, recStart=0, timer=null, micBlocked=false;
+let mediaRec=null, chunks=[], recTarget=0, recStart=0, timer=null, micBlocked=false, session=0;
 
-function ac(){ if(!ctx) ctx=new (window.AudioContext||window.webkitAudioContext)(); if(ctx.state==='suspended') ctx.resume(); return ctx; }
 function note(msg){ const n=$('note'); n.innerHTML=msg; n.classList.toggle('show',!!msg); }
+function setAudioSession(t){ try{ if(navigator.audioSession) navigator.audioSession.type=t; }catch(e){} }
 
-function reverse(b){
-  const r=ac().createBuffer(b.numberOfChannels,b.length,b.sampleRate);
-  for(let c=0;c<b.numberOfChannels;c++){ const s=b.getChannelData(c), d=r.getChannelData(c); for(let i=0,n=s.length;i<n;i++) d[i]=s[n-1-i]; }
-  return r;
+// Decodifica con un AudioContext nuevo cada vez y lo cierra (evita contextos "dormidos" al volver a la app)
+async function decode(blob){
+  const ab=await blob.arrayBuffer();
+  const AC=window.AudioContext||window.webkitAudioContext; const c=new AC();
+  try{ return await new Promise((res,rej)=>{ const p=c.decodeAudioData(ab,res,rej); if(p&&p.catch) p.catch(rej); }); }
+  finally{ try{ c.close(); }catch(e){} }
 }
-function draw(id,b,color){
+// Mono + quitar DC + normalizar + compresión suave para que suene más fuerte
+const BOOST=3;
+function loud(b){
+  const n=b.length, chs=b.numberOfChannels, d=new Float32Array(n);
+  for(let c=0;c<chs;c++){ const s=b.getChannelData(c); for(let i=0;i<n;i++) d[i]+=s[i]/chs; }
+  let mean=0; for(let i=0;i<n;i++) mean+=d[i]; mean/=n||1;
+  let peak=0; for(let i=0;i<n;i++){ d[i]-=mean; const v=Math.abs(d[i]); if(v>peak) peak=v; }
+  if(peak>1e-4){ const k=1/peak, t=Math.tanh(BOOST); for(let i=0;i<n;i++) d[i]=Math.tanh(BOOST*d[i]*k)/t*0.98; }
+  const fade=Math.min(n>>1,Math.floor(b.sampleRate*0.01)); for(let i=0;i<fade;i++){ const g=i/fade; d[i]*=g; d[n-1-i]*=g; }
+  return {data:d, sr:b.sampleRate, duration:n/b.sampleRate};
+}
+function reverse(a){ const d=a.data.slice().reverse(); return {data:d, sr:a.sr, duration:a.duration}; }
+function draw(id,a,color){
   const cv=$(id), dpr=devicePixelRatio||1, w=cv.clientWidth, h=cv.clientHeight;
   cv.width=w*dpr; cv.height=h*dpr; const g=cv.getContext('2d'); g.scale(dpr,dpr); g.clearRect(0,0,w,h);
-  if(!b) return; const d=b.getChannelData(0), step=Math.max(1,Math.floor(d.length/w)); g.fillStyle=color;
+  if(!a) return; const d=a.data, step=Math.max(1,Math.floor(d.length/w)); g.fillStyle=color;
   for(let x=0;x<w;x++){ let m=0; for(let i=0;i<step;i++){ const v=Math.abs(d[x*step+i]||0); if(v>m)m=v; } const bh=Math.max(1.5,m*h*.9); g.fillRect(x,(h-bh)/2,1,bh); }
 }
 function fmt(s){ return s.toFixed(1)+' s'; }
-function stopPlay(){ if(src){ try{src.onended=null;src.stop()}catch(e){} src=null; } if(playingBtn){ playingBtn.textContent=playingBtn.dataset.label; playingBtn=null; } }
-function play(b,btn,after){
-  const same=playingBtn===btn; stopPlay(); if(same||!b) return;
-  const a=ac(); src=a.createBufferSource(); src.buffer=b; src.connect(a.destination);
+function urlFor(a){ if(!a.url) a.url=URL.createObjectURL(new Blob([wav(a)],{type:'audio/wav'})); return a.url; }
+function freeAll(){ for(const k in buf){ if(buf[k]&&buf[k].url) URL.revokeObjectURL(buf[k].url); buf[k]=null; } }
+function stopPlay(){ if(player){ el.onended=null; try{el.pause()}catch(e){} player=null; } if(playingBtn){ playingBtn.textContent=playingBtn.dataset.label; playingBtn=null; } }
+function play(a,btn,after){
+  const same=playingBtn===btn; stopPlay(); if(same||!a||recording) return;
+  setAudioSession('playback');
+  const u=urlFor(a); if(el.src!==u) el.src=u; try{el.currentTime=0}catch(e){} el.volume=1; const me={}; player=me;
   btn.dataset.label=btn.dataset.label||btn.textContent; btn.textContent='■ Detener'; playingBtn=btn;
-  src.onended=()=>{ stopPlay(); after&&after(); }; src.start();
+  el.onended=()=>{ if(player!==me) return; stopPlay(); after&&after(); };
+  const p=el.play(); if(p&&p.catch) p.catch(()=>{ if(player===me){ stopPlay(); note('No se pudo reproducir. Toca el botón otra vez.'); } });
 }
 function setStep(n){
   for(let i=1;i<=4;i++){ const s=$('s'+i); s.classList.toggle('locked',i>n); s.classList.toggle('active',i===n); s.classList.toggle('done',i<n); }
 }
 
-async function gotAudio(blob,which){
+async function gotAudio(blob,which,sid){
   try{
-    const ab=await blob.arrayBuffer(); const b=await new Promise((res,rej)=>ac().decodeAudioData(ab,res,rej));
-    if(which===1){ buf[1]=b; buf[2]=reverse(b); buf[3]=buf[4]=null; draw('c1',b,'#ff5c7a'); draw('c2',buf[2],'#5cc8ff'); draw('c3',null); draw('c4',null);
-      $('t1').textContent='Duración: '+fmt(b.duration); $('t3').textContent=$('t4').textContent=''; setStep(2); $('s2').scrollIntoView({behavior:'smooth',block:'center'}); }
-    else { buf[3]=b; buf[4]=reverse(b); draw('c3',b,'#ff5c7a'); draw('c4',buf[4],'#5cc8ff');
-      $('t3').textContent='Duración: '+fmt(b.duration); setStep(4); $('s4').classList.add('done'); $('s4').classList.add('active'); $('s4').scrollIntoView({behavior:'smooth',block:'center'}); }
+    const b=await decode(blob); if(sid!==undefined&&sid!==session) return;
+    const a=loud(b);
+    if(a.duration<0.15){ note('La grabación salió vacía. Intenta de nuevo.'); return; }
+    note('');
+    if(which===1){ freeAll(); buf[1]=a; buf[2]=reverse(a); draw('c1',a,'#ff5c7a'); draw('c2',buf[2],'#5cc8ff'); draw('c3',null); draw('c4',null);
+      $('t1').textContent='Duración: '+fmt(a.duration); $('t3').textContent=$('t4').textContent=''; setStep(2); $('s2').scrollIntoView({behavior:'smooth',block:'center'}); }
+    else { [3,4].forEach(k=>{ if(buf[k]&&buf[k].url) URL.revokeObjectURL(buf[k].url); });
+      buf[3]=a; buf[4]=reverse(a); draw('c3',a,'#ff5c7a'); draw('c4',buf[4],'#5cc8ff');
+      $('t3').textContent='Duración: '+fmt(a.duration); setStep(4); $('s4').classList.add('done'); $('s4').classList.add('active'); $('s4').scrollIntoView({behavior:'smooth',block:'center'}); }
   }catch(e){ note('No pude leer ese audio. Intenta grabarlo de nuevo.'); }
 }
 
 async function toggleRec(which){
   const btn=$('rec'+which);
   if(mediaRec&&mediaRec.state==='recording'){ mediaRec.stop(); return; }
-  stopPlay(); ac();
+  stopPlay();
   if(micBlocked){ recTarget=which; $('file').click(); return; }
+  setAudioSession('play-and-record');
   let stream;
-  try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}}); }
+  try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:true,autoGainControl:true}}); }
   catch(e){
+    setAudioSession('playback');
+    if(e&&e.name==='NotAllowedError'){ note('Necesito permiso para usar el micrófono. Actívalo en los ajustes del navegador y vuelve a intentar.'); return; }
     micBlocked=true; recTarget=which;
-    note('Este visor no permite usar el micrófono directamente. Graba primero con la app de grabadora / Notas de Voz de tu celular y luego toca <b>Grabar</b> para elegir ese audio.');
+    note('No pude usar el micrófono. Elige un audio grabado con la grabadora de tu celular.');
     $('file').click(); return;
   }
-  chunks=[]; recTarget=which;
-  const mt=['audio/webm;codecs=opus','audio/mp4','audio/webm',''].find(t=>!t||(window.MediaRecorder&&MediaRecorder.isTypeSupported(t)));
-  mediaRec=new MediaRecorder(stream,mt?{mimeType:mt}:undefined);
-  mediaRec.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
-  mediaRec.onstop=()=>{ stream.getTracks().forEach(t=>t.stop()); clearInterval(timer); btn.classList.remove('rec'); btn.textContent=btn.dataset.label;
-    gotAudio(new Blob(chunks,{type:mediaRec.mimeType||'audio/webm'}),which); };
-  mediaRec.start(); recStart=Date.now();
+  const local=[], sid=session; recTarget=which; recording=true;
+  const mt=['audio/mp4','audio/webm;codecs=opus','audio/webm',''].find(t=>!t||(window.MediaRecorder&&MediaRecorder.isTypeSupported(t)));
+  const rec=new MediaRecorder(stream,mt?{mimeType:mt}:undefined); mediaRec=rec;
+  rec.ondataavailable=e=>{ if(e.data&&e.data.size) local.push(e.data); };
+  rec.onstop=()=>{ stream.getTracks().forEach(t=>t.stop()); clearInterval(timer); recording=false; mediaRec=null;
+    btn.classList.remove('rec'); btn.textContent=btn.dataset.label; setAudioSession('playback');
+    if(sid!==session) return;
+    gotAudio(new Blob(local,{type:rec.mimeType||mt||'audio/webm'}),which,sid); };
+  rec.start(250); recStart=Date.now();
   btn.dataset.label=btn.dataset.label||btn.textContent; btn.textContent='■ Detener'; btn.classList.add('rec');
   const t=$('t'+which); timer=setInterval(()=>t.textContent='Grabando… '+fmt((Date.now()-recStart)/1000),100);
 }
+// Si la app pasa a segundo plano mientras graba, cierra todo limpio
+document.addEventListener('visibilitychange',()=>{ if(document.hidden){ stopPlay(); if(mediaRec&&mediaRec.state==='recording') mediaRec.stop(); } });
 
 $('file').onchange=e=>{ const f=e.target.files[0]; e.target.value=''; if(f) gotAudio(f,recTarget); };
 $('rec1').onclick=()=>toggleRec(1);
@@ -155,16 +185,15 @@ $('play3').onclick=e=>play(buf[3],e.currentTarget);
 $('play4').onclick=e=>play(buf[4],e.currentTarget);
 $('cmp').onclick=e=>{ const btn=e.currentTarget; if(playingBtn===btn){stopPlay();return;}
   play(buf[1],btn,()=>{ setTimeout(()=>{ play(buf[4],btn); btn.textContent='■ Detener (tu versión)'; },400); }); btn.textContent='■ Detener (original)'; };
-$('reset').onclick=()=>{ stopPlay(); if(mediaRec&&mediaRec.state==='recording') mediaRec.stop(); for(const k in buf) buf[k]=null; ['c1','c2','c3','c4'].forEach(c=>draw(c,null)); ['t1','t2','t3','t4'].forEach(t=>$(t).textContent=''); setStep(1); scrollTo({top:0,behavior:'smooth'}); };
+$('reset').onclick=()=>{ session++; stopPlay(); if(mediaRec&&mediaRec.state==='recording') mediaRec.stop(); freeAll(); note(''); ['c1','c2','c3','c4'].forEach(c=>draw(c,null)); ['t1','t2','t3','t4'].forEach(t=>$(t).textContent=''); setStep(1); scrollTo({top:0,behavior:'smooth'}); };
 
 // WAV export
-function wav(b){
-  const ch=b.numberOfChannels,len=b.length,out=new DataView(new ArrayBuffer(44+len*ch*2));
-  const ws=(o,s)=>{for(let i=0;i<s.length;i++)out.setUint8(o+i,s.charCodeAt(i))};
-  ws(0,'RIFF');out.setUint32(4,36+len*ch*2,true);ws(8,'WAVE');ws(12,'fmt ');out.setUint32(16,16,true);out.setUint16(20,1,true);out.setUint16(22,ch,true);
-  out.setUint32(24,b.sampleRate,true);out.setUint32(28,b.sampleRate*ch*2,true);out.setUint16(32,ch*2,true);out.setUint16(34,16,true);ws(36,'data');out.setUint32(40,len*ch*2,true);
-  let o=44; const data=[...Array(ch)].map((_,c)=>b.getChannelData(c));
-  for(let i=0;i<len;i++) for(let c=0;c<ch;c++){ const v=Math.max(-1,Math.min(1,data[c][i])); out.setInt16(o,v<0?v*0x8000:v*0x7fff,true); o+=2; }
+function wav(a){
+  const d=a.data,len=d.length,out=new DataView(new ArrayBuffer(44+len*2));
+  const w=(o,t)=>{for(let i=0;i<t.length;i++)out.setUint8(o+i,t.charCodeAt(i))};
+  w(0,'RIFF');out.setUint32(4,36+len*2,true);w(8,'WAVE');w(12,'fmt ');out.setUint32(16,16,true);out.setUint16(20,1,true);out.setUint16(22,1,true);
+  out.setUint32(24,a.sr,true);out.setUint32(28,a.sr*2,true);out.setUint16(32,2,true);out.setUint16(34,16,true);w(36,'data');out.setUint32(40,len*2,true);
+  for(let i=0,o=44;i<len;i++,o+=2){ const v=Math.max(-1,Math.min(1,d[i])); out.setInt16(o,v<0?v*0x8000:v*0x7fff,true); }
   return new Uint8Array(out.buffer);
 }
 let downloads=null;
